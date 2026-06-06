@@ -30,7 +30,7 @@ DEPLOYMENT = "gpt-image-2"
 PORT = 8765
 MAX_CONCURRENT = 10  # 同时最大并发（默认 = 用户一次最多生成的张数，无需额外限制）
 MAX_IMAGES = 10      # 一次最多生成数量
-MAX_INPUT_IMAGES = 4 # 一次最多上传参考图数量
+MAX_INPUT_IMAGES = 16 # 一次最多上传参考图数量
 MAX_INPUT_IMAGE_BYTES = 50 * 1024 * 1024
 MAX_UPLOAD_BODY_BYTES = MAX_INPUT_IMAGES * MAX_INPUT_IMAGE_BYTES + 5 * 1024 * 1024
 MAX_JSON_BODY_BYTES = 256 * 1024
@@ -144,7 +144,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="upload-row">
       <label class="upload-box" for="inputImages">
         <input type="file" id="inputImages" accept="image/png,image/jpeg" multiple onchange="handleInputImages()">
-        <span id="uploadLabel">可选：上传参考图 / 待编辑图片（PNG、JPG，最多 4 张）</span>
+        <span id="uploadLabel">可选：上传参考图 / 待编辑图片（PNG、JPG，最多 __MAX_INPUT_IMAGES__ 张）</span>
       </label>
       <button class="btn btn-secondary btn-small" type="button" onclick="clearInputImages()">清除</button>
     </div>
@@ -278,7 +278,7 @@ async function handleInputImages() {
 
   if (files.length === 0) {
     preview.classList.remove('show');
-    document.getElementById('uploadLabel').textContent = '可选：上传参考图 / 待编辑图片（PNG、JPG，最多 4 张）';
+    document.getElementById('uploadLabel').textContent = `可选：上传参考图 / 待编辑图片（PNG、JPG，最多 ${MAX_INPUT_IMAGES} 张）`;
     return;
   }
 
@@ -315,7 +315,7 @@ function clearInputImages() {
   inputPreviewUrls = [];
   document.getElementById('uploadPreview').innerHTML = '';
   document.getElementById('uploadPreview').classList.remove('show');
-  document.getElementById('uploadLabel').textContent = '可选：上传参考图 / 待编辑图片（PNG、JPG，最多 4 张）';
+  document.getElementById('uploadLabel').textContent = `可选：上传参考图 / 待编辑图片（PNG、JPG，最多 ${MAX_INPUT_IMAGES} 张）`;
 }
 
 function toggleAdvanced() {
