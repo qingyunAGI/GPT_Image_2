@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import base64
+import cgi
 import time
 import uuid
 import tempfile
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any
 
 # ==================== 常量 ====================
-SAVE_DIR = os.path.expanduser("/Users/jingchen/Documents/GPT_IMAGE_2")
+SAVE_DIR = str(Path.home() / "Documents" / "GPT_IMAGE_2")
 API_KEY_ENV = "OPENAI_API_KEY"
 ENDPOINT_ENV = "AZURE_OPENAI_IMAGE_ENDPOINT"
 API_VERSION = os.environ.get("AZURE_OPENAI_IMAGE_API_VERSION", "2025-04-01-preview")
@@ -31,18 +32,20 @@ MAX_CONCURRENT = 10  # 同时最大并发（默认 = 用户一次最多生成的
 MAX_IMAGES = 10      # 一次最多生成数量
 MAX_INPUT_IMAGES = 4 # 一次最多上传参考图数量
 MAX_INPUT_IMAGE_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_BODY_BYTES = MAX_INPUT_IMAGES * MAX_INPUT_IMAGE_BYTES + 5 * 1024 * 1024
+MAX_JSON_BODY_BYTES = 256 * 1024
 MIN_INTERVAL = 0     # 请求间最小间隔秒（0 = 不禁流，触发 429 就直接展示错误）
 
-# 常用比例 → GPT-Image-2 支持的尺寸
+# 常用比例 → Azure GPT Image 系列支持的尺寸
 RATIO_TO_SIZE = {
     "1:1":    "1024x1024",
-    "16:9":   "1792x1024",
-    "9:16":   "1024x1792",
-    "4:3":    "1792x1344",
-    "3:4":    "1344x1792",
-    "3:2":    "1792x1152",
-    "2:3":    "1152x1792",
-    "21:9":   "2048x864",
+    "16:9":   "1536x1024",
+    "9:16":   "1024x1536",
+    "4:3":    "1536x1024",
+    "3:4":    "1024x1536",
+    "3:2":    "1536x1024",
+    "2:3":    "1024x1536",
+    "21:9":   "1536x1024",
 }
 
 # ==================== HTML 界面 ====================
@@ -211,7 +214,9 @@ let _galleryUrls = [];        // 最近一次 gallery 的图片 URL 列表（供
 let _galleryErrors = [];      // 最近一次 gallery 的错误信息列表
 let _lightboxIndex = 0;
 const MAX_INPUT_IMAGES = __MAX_INPUT_IMAGES__;
-let inputImagePayloads = [];
+const CSRF_TOKEN = "__CSRF_TOKEN__";
+let inputImageFiles = [];
+let inputPreviewUrls = [];
 
 function saveSettings() {
   try {
@@ -262,23 +267,12 @@ async function checkEnv() {
   } catch (e) {}
 }
 
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      const comma = result.indexOf(',');
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error || new Error('读取图片失败'));
-    reader.readAsDataURL(file);
-  });
-}
-
 async function handleInputImages() {
   const input = document.getElementById('inputImages');
   const files = Array.from(input.files || []).slice(0, MAX_INPUT_IMAGES);
-  inputImagePayloads = [];
+  inputPreviewUrls.forEach(url => URL.revokeObjectURL(url));
+  inputPreviewUrls = [];
+  inputImageFiles = [];
   const preview = document.getElementById('uploadPreview');
   preview.innerHTML = '';
 
@@ -299,15 +293,15 @@ async function handleInputImages() {
       clearInputImages();
       return;
     }
-    const b64 = await fileToBase64(file);
-    inputImagePayloads.push({ name: file.name, mime: file.type, data: b64 });
+    inputImageFiles.push(file);
     const url = URL.createObjectURL(file);
+    inputPreviewUrls.push(url);
     const safeName = file.name.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     preview.insertAdjacentHTML('beforeend', `<div class="input-thumb"><img src="${url}" alt="${safeName}"><span>${safeName}</span></div>`);
   }
 
   preview.classList.add('show');
-  document.getElementById('uploadLabel').textContent = `已选择 ${inputImagePayloads.length} 张输入图片`;
+  document.getElementById('uploadLabel').textContent = `已选择 ${inputImageFiles.length} 张输入图片`;
   if ((input.files || []).length > MAX_INPUT_IMAGES) {
     setStatus(`最多使用前 ${MAX_INPUT_IMAGES} 张输入图片`, 'info');
   }
@@ -316,7 +310,9 @@ async function handleInputImages() {
 function clearInputImages() {
   const input = document.getElementById('inputImages');
   input.value = '';
-  inputImagePayloads = [];
+  inputImageFiles = [];
+  inputPreviewUrls.forEach(url => URL.revokeObjectURL(url));
+  inputPreviewUrls = [];
   document.getElementById('uploadPreview').innerHTML = '';
   document.getElementById('uploadPreview').classList.remove('show');
   document.getElementById('uploadLabel').textContent = '可选：上传参考图 / 待编辑图片（PNG、JPG，最多 4 张）';
@@ -476,12 +472,12 @@ async function startGenerate() {
   const prompt = document.getElementById('prompt').value.trim();
   if (!prompt) { setStatus('请输入图片描述关键词', 'err'); return; }
   const fileInput = document.getElementById('inputImages');
-  if ((fileInput.files || []).length > 0 && inputImagePayloads.length === 0) {
+  if ((fileInput.files || []).length > 0 && inputImageFiles.length === 0) {
     await handleInputImages();
   }
 
   const count = Math.min(Math.max(1, parseInt(document.getElementById('count').value) || 1), __MAX__);
-  const actionText = inputImagePayloads.length > 0 ? '编辑' : '生成';
+  const actionText = inputImageFiles.length > 0 ? '编辑' : '生成';
 
   generating = true;
   const btn = document.getElementById('genBtn');
@@ -496,16 +492,17 @@ async function startGenerate() {
   updateProgress(0, count, 0);
 
   try {
+    const form = new FormData();
+    form.append('prompt', prompt);
+    form.append('ratio', document.getElementById('ratio').value);
+    form.append('quality', document.getElementById('quality').value);
+    form.append('count', String(count));
+    inputImageFiles.forEach(file => form.append('input_images', file, file.name));
+
     const r = await fetch('/api/generate', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        prompt: prompt,
-        ratio: document.getElementById('ratio').value,
-        quality: document.getElementById('quality').value,
-        count: count,
-        input_images: inputImagePayloads,
-      })
+      headers: {'X-CSRF-Token': CSRF_TOKEN},
+      body: form
     });
     const d = await r.json();
     if (d.error) {
@@ -557,7 +554,10 @@ async function cancelGenerate() {
   if (!currentJob) return;
   if (!confirm('确定要中断当前生成任务吗？')) return;
   try {
-    await fetch('/api/job/' + currentJob + '/cancel', { method: 'POST' });
+    await fetch('/api/job/' + currentJob + '/cancel', {
+      method: 'POST',
+      headers: {'X-CSRF-Token': CSRF_TOKEN}
+    });
   } catch(e) {}
   clearInterval(pollTimer);
   pollTimer = null;
@@ -576,7 +576,7 @@ function stopGenUI() {
 }
 
 function openFolder() {
-  fetch('/api/open-folder').catch(()=>{});
+  fetch('/api/open-folder', { method: 'POST', headers: {'X-CSRF-Token': CSRF_TOKEN} }).catch(()=>{});
 }
 
 // Cmd+Enter 快捷生成
@@ -700,16 +700,17 @@ class GPTImageServer:
         self._jobs: Dict[str, GenJob] = {}
         self._jobs_lock = threading.Lock()
         self._last_image_paths: List[str] = []
+        self._csrf_token = uuid.uuid4().hex
 
     # ---------- HTTP 路由 ----------
-    def handle(self, method: str, path: str, body: Optional[bytes] = None):
+    def handle(self, method: str, path: str, body: Optional[bytes] = None,
+               headers: Optional[Any] = None, upload_stream: Optional[Any] = None,
+               content_length: int = 0):
         if method == "GET":
             if path == "/" or path == "/index.html":
                 return self._serve_html()
             elif path == "/api/status":
                 return self._json_response(self._api_status())
-            elif path == "/api/open-folder":
-                return self._json_response(self._open_folder())
             elif path == "/api/images":
                 return self._json_response(self._api_list_images())
             elif path.startswith("/api/job/") and path.endswith("/cancel") is False and "/api/job/" in path:
@@ -719,8 +720,14 @@ class GPTImageServer:
             else:
                 return self._not_found()
         elif method == "POST":
+            if not self._is_trusted_post(headers):
+                return self._json_response({"error": "请求来源无效，请刷新页面后重试"})
             if path == "/api/generate":
+                if upload_stream is not None:
+                    return self._json_response(self._api_generate_multipart(headers, upload_stream, content_length))
                 return self._json_response(self._api_generate(body))
+            elif path == "/api/open-folder":
+                return self._json_response(self._open_folder())
             elif path.startswith("/api/job/") and path.endswith("/cancel"):
                 return self._json_response(self._api_job_cancel(path))
             else:
@@ -729,7 +736,8 @@ class GPTImageServer:
 
     # ---------- 页面 / 文件 ----------
     def _serve_html(self):
-        return "200 OK", "text/html; charset=utf-8", HTML_PAGE.encode("utf-8")
+        page = HTML_PAGE.replace("__CSRF_TOKEN__", self._csrf_token)
+        return "200 OK", "text/html; charset=utf-8", page.encode("utf-8")
 
     def _serve_file(self, path: str):
         fname = unquote(path[len("/file/"):])  # 二次解码防御
@@ -749,6 +757,20 @@ class GPTImageServer:
             return "500 Error", "text/plain", str(e).encode("utf-8")
 
     # ---------- API ----------
+    def _is_trusted_post(self, headers: Optional[Any]) -> bool:
+        if headers is None:
+            return False
+        token = headers.get("X-CSRF-Token", "")
+        if token != self._csrf_token:
+            return False
+        origin = headers.get("Origin")
+        if not origin:
+            return True
+        return origin in {
+            f"http://127.0.0.1:{PORT}",
+            f"http://localhost:{PORT}",
+        }
+
     def _api_status(self):
         if not self.api_key:
             return {"api_ready": False, "message": "未检测到 OPENAI_API_KEY"}
@@ -826,36 +848,39 @@ class GPTImageServer:
             raw_images = raw_images[:MAX_INPUT_IMAGES]
 
         decoded = []
-        for i, item in enumerate(raw_images):
-            if not isinstance(item, dict):
-                return [], f"第 {i + 1} 张输入图片格式不正确"
-            name = str(item.get("name") or f"input_{i + 1}.png")
-            mime = str(item.get("mime") or "").lower()
-            data = str(item.get("data") or "")
-            if "," in data and data.startswith("data:"):
-                header, data = data.split(",", 1)
-                if not mime and ";" in header:
-                    mime = header[5:].split(";", 1)[0].lower()
-            if mime not in ("image/png", "image/jpeg", "image/jpg"):
-                return [], "输入图片只支持 PNG 或 JPG"
-            try:
-                img_bytes = base64.b64decode(data, validate=True)
-            except Exception:
+        try:
+            for i, item in enumerate(raw_images):
+                if not isinstance(item, dict):
+                    return decoded, f"第 {i + 1} 张输入图片格式不正确"
+                name = str(item.get("name") or f"input_{i + 1}.png")
+                mime = str(item.get("mime") or "").lower()
+                data = str(item.get("data") or "")
+                if "," in data and data.startswith("data:"):
+                    header, data = data.split(",", 1)
+                    if not mime and ";" in header:
+                        mime = header[5:].split(";", 1)[0].lower()
+                if mime not in ("image/png", "image/jpeg", "image/jpg"):
+                    return decoded, "输入图片只支持 PNG 或 JPG"
                 try:
-                    img_bytes = base64.b64decode(data + "=" * ((4 - len(data) % 4) % 4))
+                    img_bytes = base64.b64decode(data, validate=True)
                 except Exception:
-                    return [], f"第 {i + 1} 张输入图片 base64 解码失败"
-            if not img_bytes:
-                return [], f"第 {i + 1} 张输入图片为空"
-            if len(img_bytes) > MAX_INPUT_IMAGE_BYTES:
-                return [], "单张输入图片不能超过 50MB"
+                    try:
+                        img_bytes = base64.b64decode(data + "=" * ((4 - len(data) % 4) % 4))
+                    except Exception:
+                        return decoded, f"第 {i + 1} 张输入图片 base64 解码失败"
+                if not img_bytes:
+                    return decoded, f"第 {i + 1} 张输入图片为空"
+                if len(img_bytes) > MAX_INPUT_IMAGE_BYTES:
+                    return decoded, "单张输入图片不能超过 50MB"
 
-            suffix = ".jpg" if mime in ("image/jpeg", "image/jpg") else ".png"
-            tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="gptimg_input_")
-            with os.fdopen(tmp_fd, "wb") as f:
-                f.write(img_bytes)
-            decoded.append({"path": tmp_path, "name": name, "mime": "image/jpeg" if suffix == ".jpg" else "image/png"})
-        return decoded, None
+                suffix = ".jpg" if mime in ("image/jpeg", "image/jpg") else ".png"
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="gptimg_input_")
+                with os.fdopen(tmp_fd, "wb") as f:
+                    f.write(img_bytes)
+                decoded.append({"path": tmp_path, "name": name, "mime": "image/jpeg" if suffix == ".jpg" else "image/png"})
+            return decoded, None
+        except Exception as e:
+            return decoded, f"读取输入图片失败: {e}"
 
     def _cleanup_input_images(self, input_images: List[Dict[str, str]]):
         for item in input_images:
@@ -866,21 +891,126 @@ class GPTImageServer:
                 except Exception:
                     pass
 
+    def _form_value(self, form: cgi.FieldStorage, name: str, default: str = "") -> str:
+        if name not in form:
+            return default
+        item = form[name]
+        if isinstance(item, list):
+            item = item[0] if item else None
+        if item is None or getattr(item, "filename", None):
+            return default
+        value = item.value
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        return str(value)
+
+    def _decode_uploaded_images(self, form: cgi.FieldStorage):
+        if "input_images" not in form:
+            return [], None
+        fields = form["input_images"]
+        if not isinstance(fields, list):
+            fields = [fields]
+        fields = [field for field in fields if getattr(field, "filename", None)]
+        if len(fields) > MAX_INPUT_IMAGES:
+            return [], f"一次最多上传 {MAX_INPUT_IMAGES} 张输入图片"
+
+        decoded = []
+        try:
+            for i, field in enumerate(fields):
+                filename = os.path.basename(field.filename or f"input_{i + 1}.png")
+                mime = (getattr(field, "type", None) or mimetypes.guess_type(filename)[0] or "").lower()
+                if mime not in ("image/png", "image/jpeg", "image/jpg"):
+                    return decoded, "输入图片只支持 PNG 或 JPG"
+                suffix = ".jpg" if mime in ("image/jpeg", "image/jpg") else ".png"
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="gptimg_input_")
+                total = 0
+                try:
+                    with os.fdopen(tmp_fd, "wb") as out:
+                        while True:
+                            chunk = field.file.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                            if total > MAX_INPUT_IMAGE_BYTES:
+                                try:
+                                    os.unlink(tmp_path)
+                                except Exception:
+                                    pass
+                                return decoded, "单张输入图片不能超过 50MB"
+                            out.write(chunk)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+                    raise
+                if total == 0:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+                    return decoded, f"第 {i + 1} 张输入图片为空"
+                decoded.append({"path": tmp_path, "name": filename, "mime": "image/jpeg" if suffix == ".jpg" else "image/png"})
+            return decoded, None
+        except Exception as e:
+            return decoded, f"读取输入图片失败: {e}"
+
     def _api_generate(self, body: Optional[bytes]):
         if not body:
             return {"error": "请求体为空"}
+        if len(body) > MAX_JSON_BODY_BYTES:
+            return {"error": "JSON 请求体过大，请刷新页面后重试"}
         try:
             req = json.loads(body.decode("utf-8"))
         except json.JSONDecodeError:
             return {"error": "JSON 解析失败"}
 
-        prompt = req.get("prompt", "").strip()
+        input_images, input_error = self._decode_input_images(req.get("input_images"))
+        if input_error:
+            self._cleanup_input_images(input_images)
+            return {"error": input_error}
+        return self._start_generation(req, input_images)
+
+    def _api_generate_multipart(self, headers: Any, stream: Any, content_length: int):
+        if content_length <= 0:
+            return {"error": "请求体为空"}
+        if content_length > MAX_UPLOAD_BODY_BYTES:
+            return {"error": "上传内容过大，请减少图片数量或压缩图片"}
+
+        environ = {
+            "REQUEST_METHOD": "POST",
+            "CONTENT_TYPE": headers.get("Content-Type", ""),
+            "CONTENT_LENGTH": str(content_length),
+        }
+        try:
+            form = cgi.FieldStorage(fp=stream, headers=headers, environ=environ, keep_blank_values=True)
+        except Exception as e:
+            return {"error": f"表单解析失败: {e}"}
+
+        input_images, input_error = self._decode_uploaded_images(form)
+        if input_error:
+            self._cleanup_input_images(input_images)
+            return {"error": input_error}
+
+        req = {
+            "prompt": self._form_value(form, "prompt"),
+            "ratio": self._form_value(form, "ratio", "1:1"),
+            "quality": self._form_value(form, "quality", "medium"),
+            "count": self._form_value(form, "count", "1"),
+        }
+        return self._start_generation(req, input_images)
+
+    def _start_generation(self, req: Dict[str, Any], input_images: List[Dict[str, str]]):
+        prompt = str(req.get("prompt", "")).strip()
         if not prompt:
+            self._cleanup_input_images(input_images)
             return {"error": "提示词不能为空"}
 
         if not self.api_key:
+            self._cleanup_input_images(input_images)
             return {"error": "未配置 OPENAI_API_KEY 环境变量"}
         if not self.endpoint:
+            self._cleanup_input_images(input_images)
             return {"error": "未配置 AZURE_OPENAI_IMAGE_ENDPOINT 环境变量"}
 
         # 参数处理
@@ -894,11 +1024,6 @@ class GPTImageServer:
         except (ValueError, TypeError):
             count = 1
         count = max(1, min(count, MAX_IMAGES))
-
-        input_images, input_error = self._decode_input_images(req.get("input_images"))
-        if input_error:
-            self._cleanup_input_images(input_images)
-            return {"error": input_error}
 
         # 构造 URL：有输入图时走 edits，否则走 generations
         is_edit = len(input_images) > 0
@@ -1023,12 +1148,12 @@ class GPTImageServer:
             ]
             if is_edit:
                 curl_cmd = base_curl + [
-                    "-F", f"prompt={job.prompt}",
-                    "-F", f"size={job.size}",
-                    "-F", f"quality={job.quality}",
-                    "-F", "output_compression=100",
-                    "-F", "output_format=png",
-                    "-F", "n=1",
+                    "--form-string", f"prompt={job.prompt}",
+                    "--form-string", f"size={job.size}",
+                    "--form-string", f"quality={job.quality}",
+                    "--form-string", "output_compression=100",
+                    "--form-string", "output_format=png",
+                    "--form-string", "n=1",
                 ]
                 for input_image in job.input_images:
                     image_path = input_image["path"]
@@ -1247,14 +1372,29 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = unquote(self.path.split('?')[0])
         content_length = int(self.headers.get("Content-Length", 0))
+        content_type = self.headers.get("Content-Type", "").lower()
+        if path == "/api/generate" and content_type.startswith("multipart/form-data"):
+            self._respond("POST", path, None, upload_stream=self.rfile, content_length=content_length)
+            return
+        if content_length > MAX_JSON_BODY_BYTES:
+            self.close_connection = True
+            body = json.dumps({"error": "请求体过大，请刷新页面后重试"}, ensure_ascii=False).encode("utf-8")
+            self._send_raw("200 OK", "application/json; charset=utf-8", body)
+            return
         body = self.rfile.read(content_length) if content_length > 0 else None
-        self._respond("POST", path, body)
+        self._respond("POST", path, body, content_length=content_length)
 
-    def _respond(self, method: str, path: str, body: Optional[bytes] = None):
-        status, content_type, data = self.server_app.handle(method, path, body)
+    def _respond(self, method: str, path: str, body: Optional[bytes] = None,
+                 upload_stream: Optional[Any] = None, content_length: int = 0):
+        status, content_type, data = self.server_app.handle(
+            method, path, body, headers=self.headers,
+            upload_stream=upload_stream, content_length=content_length
+        )
+        self._send_raw(status, content_type, data)
+
+    def _send_raw(self, status: str, content_type: str, data: bytes):
         self.send_response(int(status.split()[0]))
         self.send_header("Content-Type", content_type)
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()

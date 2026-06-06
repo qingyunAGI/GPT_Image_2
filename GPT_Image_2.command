@@ -14,6 +14,7 @@ done
 # 从 launchd 环境继承
 export OPENAI_API_KEY="${OPENAI_API_KEY:-$(launchctl getenv OPENAI_API_KEY 2>/dev/null)}"
 export AZURE_OPENAI_IMAGE_ENDPOINT="${AZURE_OPENAI_IMAGE_ENDPOINT:-$(launchctl getenv AZURE_OPENAI_IMAGE_ENDPOINT 2>/dev/null)}"
+export AZURE_OPENAI_IMAGE_API_VERSION="${AZURE_OPENAI_IMAGE_API_VERSION:-$(launchctl getenv AZURE_OPENAI_IMAGE_API_VERSION 2>/dev/null)}"
 
 # ---------- 检查 Python3 ----------
 if ! command -v python3 &>/dev/null; then
@@ -33,7 +34,7 @@ if [ -z "$AZURE_OPENAI_IMAGE_ENDPOINT" ]; then
 fi
 
 # ---------- 创建保存目录 ----------
-mkdir -p "/Users/jingchen/Documents/GPT_IMAGE_2"
+mkdir -p "$HOME/Documents/GPT_IMAGE_2"
 
 # ---------- 启动应用 ----------
 cd "$SCRIPT_DIR"
