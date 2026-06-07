@@ -121,7 +121,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .tree-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .tree-count { font-size: 11px; color: var(--sub); }
   .tree-empty { color: #c4c4c9; font-size: 13px; padding: 24px 8px; text-align: center; }
-  .gallery { background: var(--card); border-radius: var(--radius); padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); min-height: 300px; }
+  .gallery { background: var(--card); border-radius: var(--radius); box-shadow: 0 1px 3px rgba(0,0,0,0.06); min-height: 300px; max-height: min(720px, calc(100vh - 96px)); overflow: hidden; display: flex; flex-direction: column; }
+  .gallery-head { padding: 14px 16px 10px; border-bottom: 1px solid #eee; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .gallery-title { font-size: 14px; font-weight: 700; color: #3a3a3c; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .gallery-meta { font-size: 12px; color: var(--sub); flex: 0 0 auto; }
+  .gallery-scroller { padding: 16px; overflow-y: auto; min-height: 260px; }
   .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
   .gallery-grid img { width: 100%; border-radius: 8px; display: block; cursor: pointer; transition: transform 0.15s; }
   .gallery-grid img:hover { transform: scale(1.02); }
@@ -173,6 +177,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .history-sidebar { position: static; max-height: 260px; }
     .history-body { min-height: 120px; }
     .page-shell.history-collapsed .history-sidebar { max-height: 48px; }
+    .gallery { max-height: 68vh; }
   }
 </style>
 </head>
@@ -553,15 +558,27 @@ function renderCurrentHistoryGallery() {
   if (activeFolder !== '__all__') {
     images = historyImages.filter(img => img.folder === activeFolder || (activeFolder && img.folder && img.folder.startsWith(activeFolder + '/')));
   }
-  renderGallery(images);
+  const meta = getActiveGalleryMeta(images.length);
+  renderGallery(images, meta);
+}
+
+function getActiveGalleryMeta(count) {
+  const node = activeFolder === '__all__' ? historyTree : findTreeNodeById('folder:' + activeFolder, historyTree);
+  const title = node && node.name ? node.name : '全部历史';
+  return {
+    title: activeFolder === '__all__' ? '全部历史' : title,
+    count: count,
+  };
 }
 
 let _gallerySignature = '';  // 上一次 gallery 的状态签名（用于增量更新）
 
-function renderGallery(images) {
+function renderGallery(images, meta) {
   const gallery = document.getElementById('gallery');
+  const header = meta ? `<div class="gallery-head"><div class="gallery-title" title="${escapeHtml(meta.title)}">${escapeHtml(meta.title)}</div><div class="gallery-meta">${Number(meta.count || 0)} 张</div></div>` : '';
   if (!images || images.length === 0) {
-    gallery.innerHTML = '<p class="gallery-placeholder">生成的图片将在此处预览</p>';
+    const emptyText = meta ? '当前文件夹暂无图片' : '生成的图片将在此处预览';
+    gallery.innerHTML = header + `<div class="gallery-scroller"><p class="gallery-placeholder">${emptyText}</p></div>`;
     _galleryUrls = [];
     _galleryErrors = [];
     _gallerySignature = '';
@@ -574,7 +591,7 @@ function renderGallery(images) {
     if (img.done && img.url) return 'D:' + img.url;
     if (img.error) return 'E:' + img.error;
     return 'L:';  // 加载中
-  }).join('###');
+  }).join('###') + '::' + (meta ? `${meta.title}|${meta.count}` : '');
   // 1) 总数量没变 + 每张的最终状态(done/error)没变 → 完全跳过重建（避免已完成图片闪烁）
   // 2) 只有加载中→完成 / 加载中→失败 的"变化"才需要重建对应位置
   if (currentSig === _gallerySignature) return;  // 完全无变化，跳过
@@ -583,12 +600,12 @@ function renderGallery(images) {
   _galleryUrls = images.map(img => (img && img.done && img.url) ? img.url : null);
   _galleryErrors = images.map(img => (img && img.error) ? img.error : null);
 
-  let html = '<div class="gallery-grid">';
+  let html = header + '<div class="gallery-scroller"><div class="gallery-grid">';
   images.forEach((img, i) => {
     if (img.done && img.url) {
       // 关键：不再附加 ?t= 时间戳。文件名本身已含时间戳，浏览器可以安全缓存，
       // 这样已完成的图片不会因为重建 DOM 而闪烁。
-      const label = img.folder ? img.folder : ('#' + (i + 1));
+      const label = escapeHtml(img.folder ? img.folder : ('#' + (i + 1)));
       html += `<div class="thumb"><span class="idx">${label}</span><img src="${img.url}" alt="image ${i+1}" onclick="openLightbox(${i})"></div>`;
     } else if (img.error) {
       const safeErr = img.error.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -597,7 +614,7 @@ function renderGallery(images) {
       html += `<div class="thumb loading" style="aspect-ratio:1/1;"><span class="idx">#${i + 1}</span></div>`;
     }
   });
-  html += '</div>';
+  html += '</div></div>';
   gallery.innerHTML = html;
 }
 
