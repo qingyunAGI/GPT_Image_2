@@ -59,8 +59,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <style>
   :root { --bg: #f5f5f7; --card: #fff; --text: #1d1d1f; --sub: #86868b; --accent: #007AFF; --border: #d2d2d7; --radius: 14px; --danger: #ff3b30; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; padding: 40px 20px; }
-  .app { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 20px; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 32px 20px; }
+  .page-shell { width: min(1120px, 100%); margin: 0 auto; display: grid; grid-template-columns: 260px minmax(0, 760px); gap: 20px; align-items: start; justify-content: center; }
+  .page-shell.history-collapsed { grid-template-columns: 52px minmax(0, 760px); }
+  .app { width: 100%; display: flex; flex-direction: column; gap: 20px; }
   h1 { font-size: 28px; font-weight: 700; text-align: center; letter-spacing: -0.5px; }
   .subtitle { text-align: center; color: var(--sub); font-size: 14px; margin-top: -12px; }
   .env-badge { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 10px; font-size: 13px; font-weight: 500; }
@@ -99,9 +101,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .btn-small { padding: 10px 14px; font-size: 13px; }
   .btn-danger { background: var(--danger); color: #fff; }
   .btn-danger:hover { background: #d70015; }
-  .history-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 14px; align-items: stretch; }
-  .history-tree { background: var(--card); border-radius: var(--radius); padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); min-height: 300px; max-height: 70vh; overflow: auto; }
-  .tree-title { font-size: 13px; color: var(--sub); font-weight: 700; margin-bottom: 8px; }
+  .history-sidebar { position: sticky; top: 24px; background: var(--card); border-radius: var(--radius); padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); max-height: calc(100vh - 48px); overflow: hidden; display: flex; flex-direction: column; }
+  .history-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; min-height: 28px; }
+  .tree-title-text { font-size: 13px; color: var(--sub); font-weight: 700; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .history-toggle { width: 28px; height: 28px; border: none; border-radius: 7px; background: #f2f2f7; color: #515154; cursor: pointer; font-family: inherit; font-size: 18px; line-height: 28px; padding: 0; flex: 0 0 auto; }
+  .history-toggle:hover { background: #e8e8ed; color: var(--accent); }
+  .history-body { overflow: auto; min-height: 260px; }
+  .page-shell.history-collapsed .history-sidebar { padding: 10px; }
+  .page-shell.history-collapsed .history-header { justify-content: center; margin-bottom: 0; }
+  .page-shell.history-collapsed .tree-title-text,
+  .page-shell.history-collapsed .history-body { display: none; }
   .tree-list { display: flex; flex-direction: column; gap: 2px; }
   .tree-row { width: 100%; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px; align-items: center; border: none; background: transparent; color: #3a3a3c; border-radius: 7px; padding: 6px 7px; font-family: inherit; font-size: 13px; text-align: left; cursor: pointer; }
   .tree-row:hover { background: #f2f2f7; }
@@ -157,88 +166,98 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .modal-copy { font-size: 14px; line-height: 1.6; color: #515154; margin-bottom: 18px; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-  @media (max-width: 720px) {
-    .history-layout { grid-template-columns: 1fr; }
-    .history-tree { max-height: 240px; min-height: 120px; }
+  @media (max-width: 900px) {
+    body { padding: 20px 14px; }
+    .page-shell,
+    .page-shell.history-collapsed { grid-template-columns: 1fr; gap: 14px; }
+    .history-sidebar { position: static; max-height: 260px; }
+    .history-body { min-height: 120px; }
+    .page-shell.history-collapsed .history-sidebar { max-height: 48px; }
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <h1>🎨 GPT-Image-2 图片生成器</h1>
-  <p class="subtitle">输入关键词，AI 为你生成精美图片（支持多图并发）</p>
-
-  <div id="envBadge" class="env-badge warn">检测中...</div>
-
-  <div class="card">
-    <textarea id="prompt" placeholder="输入图片描述关键词... 例如：A photograph of a red fox in an autumn forest"></textarea>
-    <div class="upload-row">
-      <label class="upload-box" for="inputImages">
-        <input type="file" id="inputImages" accept="image/png,image/jpeg" multiple onchange="handleInputImages()">
-        <span id="uploadLabel">可选：上传参考图 / 待编辑图片（PNG、JPG，最多 __MAX_INPUT_IMAGES__ 张）</span>
-      </label>
-      <button class="btn btn-secondary btn-small" type="button" onclick="clearInputImages()">清除</button>
+<div class="page-shell" id="pageShell">
+  <aside class="history-sidebar" id="historyPanel">
+    <div class="history-header">
+      <span class="tree-title-text">历史照片</span>
+      <button class="history-toggle" type="button" id="historyToggle" onclick="toggleHistoryPanel()" title="收起历史照片" aria-label="收起历史照片">‹</button>
     </div>
-    <div class="upload-preview" id="uploadPreview"></div>
-    <p class="hint">提示：不上传图片时为文生图；上传图片后会按提示词编辑或参考图片。Cmd+Enter 快速生成</p>
-    <button class="advanced-toggle" type="button" id="advancedToggle" onclick="toggleAdvanced()" aria-expanded="true" aria-controls="advancedPanel">
-      <span>⚙ 高级设置</span><span class="chevron" id="advancedChevron">▲</span>
-    </button>
-    <div class="advanced show" id="advancedPanel">
-      <div class="field">
-        <label>图片比例</label>
-        <select id="ratio">
-          <option value="1:1">1:1 方形</option>
-          <option value="16:9">16:9 横屏</option>
-          <option value="9:16">9:16 竖屏</option>
-          <option value="4:3">4:3 横屏</option>
-          <option value="3:4">3:4 竖屏</option>
-          <option value="3:2">3:2 横屏</option>
-          <option value="2:3">2:3 竖屏</option>
-          <option value="21:9">21:9 超宽</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>生成质量</label>
-        <select id="quality">
-          <option value="medium">Medium（推荐）</option>
-          <option value="low">Low</option>
-          <option value="high">High</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>生成数量</label>
-        <input type="number" id="count" value="1" min="1" max="__MAX__">
-      </div>
-      <div class="save-panel">
-        <div>
-          <label for="saveDirInput">保存目录</label>
-          <input id="saveDirInput" type="text" readonly value="SAVE_DIR_PLACEHOLDER">
-        </div>
-        <button class="btn btn-secondary btn-small" type="button" id="chooseFolderBtn" onclick="chooseFolder()">选择目录</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="btn-row">
-    <button class="btn btn-primary" id="genBtn" onclick="startGenerate()">🎨 生成图片</button>
-    <button class="btn btn-secondary" onclick="openFolder()" title="生成中也可以使用">📁 打开目录</button>
-  </div>
-
-  <div class="history-layout">
-    <aside class="history-tree" id="historyTree">
-      <div class="tree-title">历史照片</div>
+    <div class="history-body" id="historyTree">
       <div class="tree-empty">加载中...</div>
-    </aside>
+    </div>
+  </aside>
+
+  <div class="app">
+    <h1>🎨 GPT-Image-2 图片生成器</h1>
+    <p class="subtitle">输入关键词，AI 为你生成精美图片（支持多图并发）</p>
+
+    <div id="envBadge" class="env-badge warn">检测中...</div>
+
+    <div class="card">
+      <textarea id="prompt" placeholder="输入图片描述关键词... 例如：A photograph of a red fox in an autumn forest"></textarea>
+      <div class="upload-row">
+        <label class="upload-box" for="inputImages">
+          <input type="file" id="inputImages" accept="image/png,image/jpeg" multiple onchange="handleInputImages()">
+          <span id="uploadLabel">可选：上传参考图 / 待编辑图片（PNG、JPG，最多 __MAX_INPUT_IMAGES__ 张）</span>
+        </label>
+        <button class="btn btn-secondary btn-small" type="button" onclick="clearInputImages()">清除</button>
+      </div>
+      <div class="upload-preview" id="uploadPreview"></div>
+      <p class="hint">提示：不上传图片时为文生图；上传图片后会按提示词编辑或参考图片。Cmd+Enter 快速生成</p>
+      <button class="advanced-toggle" type="button" id="advancedToggle" onclick="toggleAdvanced()" aria-expanded="true" aria-controls="advancedPanel">
+        <span>⚙ 高级设置</span><span class="chevron" id="advancedChevron">▲</span>
+      </button>
+      <div class="advanced show" id="advancedPanel">
+        <div class="field">
+          <label>图片比例</label>
+          <select id="ratio">
+            <option value="1:1">1:1 方形</option>
+            <option value="16:9">16:9 横屏</option>
+            <option value="9:16">9:16 竖屏</option>
+            <option value="4:3">4:3 横屏</option>
+            <option value="3:4">3:4 竖屏</option>
+            <option value="3:2">3:2 横屏</option>
+            <option value="2:3">2:3 竖屏</option>
+            <option value="21:9">21:9 超宽</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>生成质量</label>
+          <select id="quality">
+            <option value="medium">Medium（推荐）</option>
+            <option value="low">Low</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>生成数量</label>
+          <input type="number" id="count" value="1" min="1" max="__MAX__">
+        </div>
+        <div class="save-panel">
+          <div>
+            <label for="saveDirInput">保存目录</label>
+            <input id="saveDirInput" type="text" readonly value="SAVE_DIR_PLACEHOLDER">
+          </div>
+          <button class="btn btn-secondary btn-small" type="button" id="chooseFolderBtn" onclick="chooseFolder()">选择目录</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="genBtn" onclick="startGenerate()">🎨 生成图片</button>
+      <button class="btn btn-secondary" onclick="openFolder()" title="生成中也可以使用">📁 打开目录</button>
+    </div>
+
     <div class="gallery" id="gallery">
       <p class="gallery-placeholder">生成的图片将在此处预览</p>
     </div>
-  </div>
 
-  <div class="status info" id="status">就绪</div>
-  <div id="progressWrap" style="display:none;">
-    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-    <div style="font-size:12px; color:var(--sub); margin-top:4px;" id="progressText">0 / 0</div>
+    <div class="status info" id="status">就绪</div>
+    <div id="progressWrap" style="display:none;">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div style="font-size:12px; color:var(--sub); margin-top:4px;" id="progressText">0 / 0</div>
+    </div>
   </div>
 </div>
 
@@ -278,6 +297,7 @@ let historyImages = [];
 let historyTree = null;
 let activeFolder = '__all__';
 let expandedTreeFolders = new Set(['__all__']);
+let historyCollapsed = false;
 
 function saveSettings() {
   try {
@@ -297,6 +317,8 @@ function loadSettings() {
     if (q) document.getElementById('quality').value = q;
     const c = localStorage.getItem('gptimg.count');
     if (c) document.getElementById('count').value = c;
+    historyCollapsed = localStorage.getItem('gptimg.historyCollapsed') === '1';
+    applyHistoryCollapsed(historyCollapsed, false);
   } catch (e) {}
 }
 async function loadRecentImages() {
@@ -432,6 +454,25 @@ function toggleAdvanced() {
   document.getElementById('advancedChevron').textContent = expanded ? '▲' : '▼';
 }
 
+function toggleHistoryPanel() {
+  applyHistoryCollapsed(!historyCollapsed, true);
+}
+
+function applyHistoryCollapsed(collapsed, persist) {
+  historyCollapsed = collapsed;
+  const shell = document.getElementById('pageShell');
+  const btn = document.getElementById('historyToggle');
+  if (shell) shell.classList.toggle('history-collapsed', collapsed);
+  if (btn) {
+    btn.textContent = collapsed ? '›' : '‹';
+    btn.title = collapsed ? '打开历史照片' : '收起历史照片';
+    btn.setAttribute('aria-label', collapsed ? '打开历史照片' : '收起历史照片');
+  }
+  if (persist) {
+    try { localStorage.setItem('gptimg.historyCollapsed', collapsed ? '1' : '0'); } catch (e) {}
+  }
+}
+
 function setStatus(msg, cls) {
   const s = document.getElementById('status');
   s.textContent = msg;
@@ -451,10 +492,10 @@ function renderHistoryTree() {
   const container = document.getElementById('historyTree');
   if (!container) return;
   if (!historyTree || !historyImages.length) {
-    container.innerHTML = '<div class="tree-title">历史照片</div><div class="tree-empty">暂无历史图片</div>';
+    container.innerHTML = '<div class="tree-empty">暂无历史图片</div>';
     return;
   }
-  let html = '<div class="tree-title">历史照片</div><div class="tree-list">';
+  let html = '<div class="tree-list">';
   html += renderTreeNode(historyTree, 0);
   html += '</div>';
   container.innerHTML = html;
