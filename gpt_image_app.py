@@ -116,6 +116,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .tree-row:hover { background: #f2f2f7; }
   .tree-row.active { background: #e8f0fe; color: #1a56db; font-weight: 700; }
   .tree-row.file { grid-template-columns: 18px minmax(0, 1fr); color: #515154; }
+  .tree-row.file.active { background: #eef7ff; color: #1a56db; font-weight: 700; }
   .tree-spacer { width: 18px; }
   .tree-icon { width: 18px; text-align: center; color: var(--sub); font-size: 11px; }
   .tree-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -131,6 +132,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .gallery-grid img:hover { transform: scale(1.02); }
   .gallery-placeholder { color: #c4c4c9; font-size: 15px; text-align: center; padding: 60px 20px; }
   .thumb { position: relative; border-radius: 8px; overflow: hidden; background: #eee; }
+  .thumb.selected { outline: 3px solid var(--accent); outline-offset: 3px; }
   .thumb .idx { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; }
   .thumb.loading::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, #eee 25%, #f5f5f5 50%, #eee 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
   .thumb-error { padding: 16px !important; flex-direction: column !important; gap: 8px; cursor: default; }
@@ -303,6 +305,7 @@ let historyTree = null;
 let activeFolder = '__all__';
 let expandedTreeFolders = new Set(['__all__']);
 let historyCollapsed = false;
+let selectedImageRel = '';
 
 function saveSettings() {
   try {
@@ -332,6 +335,12 @@ async function loadRecentImages() {
     const d = await r.json();
     historyImages = d.images || [];
     historyTree = d.tree || null;
+    if (selectedImageRel && !historyImages.some(img => img.rel === selectedImageRel)) {
+      selectedImageRel = '';
+    }
+    if (activeFolder !== '__all__' && !historyImages.some(img => img.folder === activeFolder || (activeFolder && img.folder && img.folder.startsWith(activeFolder + '/')))) {
+      activeFolder = '__all__';
+    }
     seedExpandedFolders(historyTree);
     renderHistoryTree();
     if (historyImages.length > 0) {
@@ -513,7 +522,8 @@ function renderTreeNode(node, depth) {
   const count = Number(node.count || 0);
   const indent = depth * 14;
   if (isFile) {
-    return `<button class="tree-row file" style="padding-left:${indent + 7}px" type="button" title="${name}" data-id="${id}" onclick="openTreeFile(this.dataset.id)"><span class="tree-icon">□</span><span class="tree-name">${name}</span></button>`;
+    const active = selectedImageRel && selectedImageRel === node.rel;
+    return `<button class="tree-row file ${active ? 'active' : ''}" style="padding-left:${indent + 7}px" type="button" title="${name}" data-id="${id}" onclick="selectTreeFile(this.dataset.id)"><span class="tree-icon">□</span><span class="tree-name">${name}</span></button>`;
   }
   const expanded = expandedTreeFolders.has(node.id);
   const active = activeFolder === (node.folder === undefined ? '__all__' : node.folder);
@@ -543,14 +553,43 @@ function selectTreeFolder(id) {
     else expandedTreeFolders.add(node.id);
   }
   activeFolder = node.folder === undefined ? '__all__' : node.folder;
+  selectedImageRel = '';
   renderHistoryTree();
   renderCurrentHistoryGallery();
 }
 
-function openTreeFile(id) {
+function selectTreeFile(id) {
   const node = findTreeNodeById(id, historyTree);
-  if (!node || !node.url) return;
-  openLightboxUrl(node.url);
+  if (!node || !node.rel) return;
+  const img = historyImages.find(item => item.rel === node.rel);
+  if (!img) return;
+  activeFolder = img.folder || '';
+  selectedImageRel = img.rel;
+  expandedTreeFolders.add('__all__');
+  expandTreePath(activeFolder);
+  renderHistoryTree();
+  renderCurrentHistoryGallery();
+  setStatus('已选中图片，可在右侧预览区点击缩略图查看大图', 'info');
+  requestAnimationFrame(() => {
+    const target = document.querySelector(`.thumb[data-rel="${cssEscape(selectedImageRel)}"]`);
+    if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  });
+}
+
+function expandTreePath(folder) {
+  if (!folder) {
+    expandedTreeFolders.add('folder:');
+    return;
+  }
+  const parts = folder.split('/');
+  for (let i = 1; i <= parts.length; i++) {
+    expandedTreeFolders.add('folder:' + parts.slice(0, i).join('/'));
+  }
+}
+
+function cssEscape(value) {
+  if (window.CSS && CSS.escape) return CSS.escape(value);
+  return String(value).replace(/["\\]/g, '\\$&');
 }
 
 function renderCurrentHistoryGallery() {
@@ -588,7 +627,7 @@ function renderGallery(images, meta) {
   // 签名格式: done|url|error 用 "||" 连接，再用 "###" 分隔每张
   const currentSig = images.map(img => {
     if (!img) return '';
-    if (img.done && img.url) return 'D:' + img.url;
+    if (img.done && img.url) return 'D:' + img.url + ':' + (selectedImageRel === img.rel ? 'S' : '');
     if (img.error) return 'E:' + img.error;
     return 'L:';  // 加载中
   }).join('###') + '::' + (meta ? `${meta.title}|${meta.count}` : '');
@@ -606,7 +645,9 @@ function renderGallery(images, meta) {
       // 关键：不再附加 ?t= 时间戳。文件名本身已含时间戳，浏览器可以安全缓存，
       // 这样已完成的图片不会因为重建 DOM 而闪烁。
       const label = escapeHtml(img.folder ? img.folder : ('#' + (i + 1)));
-      html += `<div class="thumb"><span class="idx">${label}</span><img src="${img.url}" alt="image ${i+1}" onclick="openLightbox(${i})"></div>`;
+      const rel = escapeHtml(img.rel || '');
+      const selected = selectedImageRel && img.rel === selectedImageRel;
+      html += `<div class="thumb ${selected ? 'selected' : ''}" data-rel="${rel}"><span class="idx">${label}</span><img src="${img.url}" alt="image ${i+1}" onclick="openLightbox(${i})"></div>`;
     } else if (img.error) {
       const safeErr = img.error.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       html += `<div class="thumb thumb-error" data-err="${safeErr}"><span class="idx">#${i + 1}</span><div class="err-text">\u274c ${safeErr}</div><button class="copy-btn" data-idx="${i}" onclick="copyErrorText(${i}, this)">复制错误</button></div>`;
@@ -654,16 +695,6 @@ function openLightbox(index) {
   const url = _galleryUrls[index];
   if (!url) return;
   _lightboxIndex = index;
-  document.getElementById('lightbox-img').src = url + '?t=' + Date.now();
-  _updateLightboxInfo();
-  document.getElementById('lightbox').classList.add('show');
-  document.body.style.overflow = 'hidden';
-}
-
-function openLightboxUrl(url) {
-  if (!url) return;
-  _galleryUrls = [url];
-  _lightboxIndex = 0;
   document.getElementById('lightbox-img').src = url + '?t=' + Date.now();
   _updateLightboxInfo();
   document.getElementById('lightbox').classList.add('show');
