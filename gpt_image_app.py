@@ -129,6 +129,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .lightbox-nav:hover { background: rgba(255,255,255,0.28); }
   .lightbox-prev { left: 24px; }
   .lightbox-next { right: 24px; }
+  .modal { position: fixed; inset: 0; z-index: 10000; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,0.36); animation: fadeIn 0.16s ease-out; }
+  .modal.show { display: flex; }
+  .modal-panel { width: min(420px, 100%); background: #fff; border-radius: 12px; box-shadow: 0 24px 80px rgba(0,0,0,0.26); padding: 20px; }
+  .modal-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+  .modal-copy { font-size: 14px; line-height: 1.6; color: #515154; margin-bottom: 18px; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 </style>
 </head>
@@ -204,6 +210,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <img id="lightbox-img" src="" alt="大图预览">
   <button class="lightbox-nav lightbox-next" onclick="navLightbox(event, 1)" title="下一张 (→)">›</button>
   <div class="lightbox-info" id="lightbox-info">点击空白处或按 ESC 关闭</div>
+</div>
+
+<!-- 中断确认弹窗 -->
+<div class="modal" id="cancelModal" onclick="closeCancelModal(event)">
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="cancelModalTitle" onclick="event.stopPropagation()">
+    <div class="modal-title" id="cancelModalTitle">中断当前任务？</div>
+    <div class="modal-copy">已经完成的图片会保留，正在生成中的请求会尽量停止。中断后可以修改提示词或参数再重新生成。</div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary btn-small" type="button" onclick="closeCancelModal(null, true)">继续等待</button>
+      <button class="btn btn-danger btn-small" type="button" id="confirmCancelBtn" onclick="confirmCancelGenerate()">中断任务</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -445,6 +463,11 @@ function _updateLightboxInfo() {
 
 // ESC 关闭弹窗，← → 切换
 document.addEventListener('keydown', function(e) {
+  const cancelModal = document.getElementById('cancelModal');
+  if (cancelModal.classList.contains('show')) {
+    if (e.key === 'Escape') closeCancelModal(null, true);
+    return;
+  }
   const lb = document.getElementById('lightbox');
   if (!lb.classList.contains('show')) return;
   if (e.key === 'Escape') { closeLightbox(null, true); }
@@ -552,13 +575,39 @@ async function pollProgress() {
 
 async function cancelGenerate() {
   if (!currentJob) return;
-  if (!confirm('确定要中断当前生成任务吗？')) return;
+  openCancelModal();
+}
+
+function openCancelModal() {
+  const modal = document.getElementById('cancelModal');
+  modal.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  setTimeout(() => document.getElementById('confirmCancelBtn').focus(), 0);
+}
+
+function closeCancelModal(event, force) {
+  if (!force && event && event.target && event.target.id !== 'cancelModal') return;
+  document.getElementById('cancelModal').classList.remove('show');
+  document.body.style.overflow = '';
+}
+
+async function confirmCancelGenerate() {
+  if (!currentJob) {
+    closeCancelModal(null, true);
+    return;
+  }
+  const btn = document.getElementById('confirmCancelBtn');
+  btn.disabled = true;
+  btn.textContent = '中断中...';
   try {
     await fetch('/api/job/' + currentJob + '/cancel', {
       method: 'POST',
       headers: {'X-CSRF-Token': CSRF_TOKEN}
     });
   } catch(e) {}
+  closeCancelModal(null, true);
+  btn.disabled = false;
+  btn.textContent = '中断任务';
   clearInterval(pollTimer);
   pollTimer = null;
   currentJob = null;
