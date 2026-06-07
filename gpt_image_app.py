@@ -378,7 +378,8 @@ function renderGallery(images) {
     if (img.done && img.url) {
       // 关键：不再附加 ?t= 时间戳。文件名本身已含时间戳，浏览器可以安全缓存，
       // 这样已完成的图片不会因为重建 DOM 而闪烁。
-      html += `<div class="thumb"><span class="idx">#${i + 1}</span><img src="${img.url}" alt="image ${i+1}" onclick="openLightbox(${i})"></div>`;
+      const label = img.folder ? img.folder : ('#' + (i + 1));
+      html += `<div class="thumb"><span class="idx">${label}</span><img src="${img.url}" alt="image ${i+1}" onclick="openLightbox(${i})"></div>`;
     } else if (img.error) {
       const safeErr = img.error.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       html += `<div class="thumb thumb-error" data-err="${safeErr}"><span class="idx">#${i + 1}</span><div class="err-text">\u274c ${safeErr}</div><button class="copy-btn" data-idx="${i}" onclick="copyErrorText(${i}, this)">复制错误</button></div>`;
@@ -732,7 +733,7 @@ class GenJob:
                 self.images[idx]["error"] = error
                 self.errors += 1
             else:
-                self.images[idx]["url"] = f"/file/{os.path.basename(path)}" if path else None
+                self.images[idx]["url"] = GPTImageServer.file_url_for_path(path) if path else None
                 self.images[idx]["path"] = path
             self.completed += 1
             if self.completed >= self.count or self.cancelled:
@@ -742,6 +743,16 @@ class GenJob:
 # ==================== Flask 应用 ====================
 
 class GPTImageServer:
+    @staticmethod
+    def file_url_for_path(path: str) -> Optional[str]:
+        try:
+            save_dir = Path(SAVE_DIR).resolve()
+            fpath = Path(path).resolve()
+            rel = fpath.relative_to(save_dir)
+            return "/file/" + "/".join(rel.parts)
+        except Exception:
+            return None
+
     def __init__(self):
         self.api_key = os.environ.get(API_KEY_ENV, "")
         self.endpoint = os.environ.get(ENDPOINT_ENV, "").rstrip("/")
@@ -789,10 +800,10 @@ class GPTImageServer:
         return "200 OK", "text/html; charset=utf-8", page.encode("utf-8")
 
     def _serve_file(self, path: str):
-        fname = unquote(path[len("/file/"):])  # 二次解码防御
+        rel_name = unquote(path[len("/file/"):]).lstrip("/")  # 二次解码防御
         # 安全校验：只允许 SAVE_DIR 下的文件
         save_dir = Path(SAVE_DIR).resolve()
-        fpath = (save_dir / fname).resolve()
+        fpath = (save_dir / rel_name).resolve()
         try:
             if not str(fpath).startswith(str(save_dir) + os.sep):
                 return "403 Forbidden", "text/plain", b"forbidden"
@@ -836,16 +847,19 @@ class GPTImageServer:
             if not save_dir.exists():
                 return {"images": []}
             files = []
-            for f in sorted(save_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            image_paths = [p for p in save_dir.rglob("*.png") if p.is_file()]
+            for f in sorted(image_paths, key=lambda p: p.stat().st_mtime, reverse=True):
                 if not f.is_file() or f.suffix.lower() != ".png":
                     continue
                 try:
                     size_kb = f.stat().st_size / 1024
+                    rel = f.relative_to(save_dir)
                     files.append({
                         "done": True,
-                        "url": "/file/" + f.name,
+                        "url": "/file/" + "/".join(rel.parts),
                         "path": str(f),
                         "name": f.name,
+                        "folder": str(rel.parent) if str(rel.parent) != "." else "",
                         "size_kb": round(size_kb, 1),
                     })
                     if len(files) >= 50:
@@ -1385,7 +1399,7 @@ class GPTImageServer:
             return None
 
     def _save_image(self, img_bytes: bytes, prompt: str, idx: int, total: int) -> str:
-        save_dir = Path(SAVE_DIR)
+        save_dir = Path(SAVE_DIR) / datetime.now().strftime("%Y-%m-%d")
         save_dir.mkdir(parents=True, exist_ok=True)
         safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in prompt)[:40].strip().replace(" ", "_")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
