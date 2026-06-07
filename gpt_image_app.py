@@ -329,7 +329,10 @@ function loadSettings() {
     applyHistoryCollapsed(historyCollapsed, false);
   } catch (e) {}
 }
-async function loadRecentImages() {
+async function loadRecentImages(options) {
+  const opts = options || {};
+  const updateGallery = opts.updateGallery !== false;
+  const showLoadedStatus = opts.showLoadedStatus !== false;
   try {
     const r = await fetch('/api/images');
     const d = await r.json();
@@ -343,17 +346,17 @@ async function loadRecentImages() {
     }
     seedExpandedFolders(historyTree);
     renderHistoryTree();
-    if (historyImages.length > 0) {
+    if (updateGallery && historyImages.length > 0) {
       renderCurrentHistoryGallery();
-      setStatus('已加载 ' + historyImages.length + ' 张历史图片，可继续生成新图片', 'ok');
-    } else {
+      if (showLoadedStatus) setStatus('已加载 ' + historyImages.length + ' 张历史图片，可继续生成新图片', 'ok');
+    } else if (updateGallery) {
       renderGallery([]);
     }
   } catch (e) {
     historyImages = [];
     historyTree = null;
     renderHistoryTree();
-    renderGallery([]);
+    if (updateGallery) renderGallery([]);
   }
 }
 async function checkEnv() {
@@ -835,7 +838,7 @@ async function pollProgress() {
       currentJob = null;
       stopGenUI();
       const ok = d.completed - d.errors;
-      await loadRecentImages();
+      await loadRecentImages({updateGallery: false, showLoadedStatus: false});
       setStatus(`\u2705 任务完成！成功 ${ok} 张${d.errors > 0 ? '，失败 ' + d.errors : ''}`, 'ok');
     }
   } catch(e) {
