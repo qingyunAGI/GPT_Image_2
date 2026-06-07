@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any
 
 # ==================== 常量 ====================
-SAVE_DIR = str(Path.home() / "Documents" / "GPT_IMAGE_2")
+DEFAULT_SAVE_DIR = str(Path.home() / "Documents" / "GPT_IMAGE_2")
+SETTINGS_PATH = Path.home() / ".gpt_image_2_settings.json"
 API_KEY_ENV = "OPENAI_API_KEY"
 ENDPOINT_ENV = "AZURE_OPENAI_IMAGE_ENDPOINT"
 API_VERSION = os.environ.get("AZURE_OPENAI_IMAGE_API_VERSION", "2025-04-01-preview")
@@ -117,6 +118,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .save-path { font-size: 12px; color: var(--sub); text-align: center; }
+  .save-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+  .save-panel label { display: block; font-size: 12px; color: var(--sub); margin-bottom: 5px; font-weight: 500; }
+  .save-panel input { width: 100%; padding: 9px 10px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 13px; font-family: inherit; color: #515154; background: #fafafa; overflow: hidden; text-overflow: ellipsis; }
 
   /* 大图弹窗 (Lightbox) */
   .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 9999; display: none; align-items: center; justify-content: center; padding: 40px; animation: fadeIn 0.18s ease-out; }
@@ -200,7 +204,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <div style="font-size:12px; color:var(--sub); margin-top:4px;" id="progressText">0 / 0</div>
   </div>
-  <p class="save-path">保存至 → SAVE_DIR_PLACEHOLDER</p>
+  <div class="save-panel">
+    <div>
+      <label for="saveDirInput">保存目录</label>
+      <input id="saveDirInput" type="text" readonly value="SAVE_DIR_PLACEHOLDER">
+    </div>
+    <button class="btn btn-secondary btn-small" type="button" id="chooseFolderBtn" onclick="chooseFolder()">选择目录</button>
+  </div>
 </div>
 
 <!-- 大图弹窗 -->
@@ -282,6 +292,19 @@ async function checkEnv() {
       badge.className = 'env-badge warn';
       badge.textContent = '\u26a0\ufe0f ' + d.message;
     }
+  } catch (e) {}
+}
+
+function setSaveDir(path) {
+  const input = document.getElementById('saveDirInput');
+  if (input) input.value = path || '';
+}
+
+async function loadServerSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    const d = await r.json();
+    if (d.save_dir) setSaveDir(d.save_dir);
   } catch (e) {}
 }
 
@@ -629,6 +652,38 @@ function openFolder() {
   fetch('/api/open-folder', { method: 'POST', headers: {'X-CSRF-Token': CSRF_TOKEN} }).catch(()=>{});
 }
 
+async function chooseFolder() {
+  const btn = document.getElementById('chooseFolderBtn');
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '选择中...';
+  try {
+    const r = await fetch('/api/select-folder', {
+      method: 'POST',
+      headers: {'X-CSRF-Token': CSRF_TOKEN}
+    });
+    const d = await r.json();
+    if (d.cancelled) {
+      setStatus('已取消选择目录', 'info');
+      return;
+    }
+    if (d.error) {
+      setStatus('\u274c ' + d.error, 'err');
+      return;
+    }
+    if (d.save_dir) {
+      setSaveDir(d.save_dir);
+      setStatus('\u2705 保存目录已更新', 'ok');
+      await loadRecentImages();
+    }
+  } catch (e) {
+    setStatus('\u274c 选择目录失败: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
 // Cmd+Enter 快捷生成
 document.getElementById('prompt').addEventListener('keydown', function(e) {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -640,6 +695,7 @@ document.getElementById('prompt').addEventListener('keydown', function(e) {
 // 页面加载后：恢复设置 + 加载历史图片
 (async function initPage() {
   loadSettings();
+  await loadServerSettings();
   checkEnv();
   await loadRecentImages();
 })();
@@ -647,7 +703,6 @@ document.getElementById('prompt').addEventListener('keydown', function(e) {
 </body>
 </html>"""
 
-HTML_PAGE = HTML_PAGE.replace("SAVE_DIR_PLACEHOLDER", SAVE_DIR)
 HTML_PAGE = HTML_PAGE.replace("__MAX__", str(MAX_IMAGES))
 HTML_PAGE = HTML_PAGE.replace("__MAX_INPUT_IMAGES__", str(MAX_INPUT_IMAGES))
 
@@ -657,7 +712,8 @@ HTML_PAGE = HTML_PAGE.replace("__MAX_INPUT_IMAGES__", str(MAX_INPUT_IMAGES))
 class GenJob:
     """单次生成任务（可能包含多张并发图片）"""
     def __init__(self, job_id: str, prompt: str, size: str, quality: str, count: int,
-                 api_key: str, url: str, input_images: Optional[List[Dict[str, str]]] = None):
+                 api_key: str, url: str, save_dir: str,
+                 input_images: Optional[List[Dict[str, str]]] = None):
         self.job_id = job_id
         self.prompt = prompt
         self.size = size
@@ -665,6 +721,7 @@ class GenJob:
         self.count = count
         self.api_key = api_key
         self.url = url
+        self.save_dir = save_dir
         self.input_images = input_images or []
 
         self.images: List[Dict[str, Any]] = [{"done": False, "error": None, "url": None, "path": None}
@@ -733,7 +790,7 @@ class GenJob:
                 self.images[idx]["error"] = error
                 self.errors += 1
             else:
-                self.images[idx]["url"] = GPTImageServer.file_url_for_path(path) if path else None
+                self.images[idx]["url"] = GPTImageServer.file_url_for_path(path, self.save_dir) if path else None
                 self.images[idx]["path"] = path
             self.completed += 1
             if self.completed >= self.count or self.cancelled:
@@ -744,11 +801,11 @@ class GenJob:
 
 class GPTImageServer:
     @staticmethod
-    def file_url_for_path(path: str) -> Optional[str]:
+    def file_url_for_path(path: str, save_dir: str) -> Optional[str]:
         try:
-            save_dir = Path(SAVE_DIR).resolve()
+            save_root = Path(save_dir).resolve()
             fpath = Path(path).resolve()
-            rel = fpath.relative_to(save_dir)
+            rel = fpath.relative_to(save_root)
             return "/file/" + "/".join(rel.parts)
         except Exception:
             return None
@@ -756,11 +813,46 @@ class GPTImageServer:
     def __init__(self):
         self.api_key = os.environ.get(API_KEY_ENV, "")
         self.endpoint = os.environ.get(ENDPOINT_ENV, "").rstrip("/")
-        Path(SAVE_DIR).mkdir(parents=True, exist_ok=True)
+        self.save_dir = self._load_save_dir()
+        Path(self.save_dir).mkdir(parents=True, exist_ok=True)
         self._jobs: Dict[str, GenJob] = {}
         self._jobs_lock = threading.Lock()
         self._last_image_paths: List[str] = []
         self._csrf_token = uuid.uuid4().hex
+
+    def _load_save_dir(self) -> str:
+        try:
+            if SETTINGS_PATH.exists():
+                data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+                path = str(data.get("save_dir") or "").strip()
+                if path:
+                    return str(Path(path).expanduser())
+        except Exception as e:
+            print(f"  [WARN] 读取设置失败: {e}")
+        return DEFAULT_SAVE_DIR
+
+    def _save_settings(self):
+        try:
+            SETTINGS_PATH.write_text(
+                json.dumps({"save_dir": self.save_dir}, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+        except Exception as e:
+            print(f"  [WARN] 保存设置失败: {e}")
+
+    def _set_save_dir(self, path: str):
+        if not path or not str(path).strip():
+            return "目录不能为空"
+        save_dir = Path(str(path).strip()).expanduser()
+        try:
+            save_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return f"无法创建目录: {e}"
+        if not save_dir.is_dir():
+            return "选择的路径不是文件夹"
+        self.save_dir = str(save_dir.resolve())
+        self._save_settings()
+        return None
 
     # ---------- HTTP 路由 ----------
     def handle(self, method: str, path: str, body: Optional[bytes] = None,
@@ -771,6 +863,8 @@ class GPTImageServer:
                 return self._serve_html()
             elif path == "/api/status":
                 return self._json_response(self._api_status())
+            elif path == "/api/settings":
+                return self._json_response(self._api_settings())
             elif path == "/api/images":
                 return self._json_response(self._api_list_images())
             elif path.startswith("/api/job/") and path.endswith("/cancel") is False and "/api/job/" in path:
@@ -786,6 +880,8 @@ class GPTImageServer:
                 if upload_stream is not None:
                     return self._json_response(self._api_generate_multipart(headers, upload_stream, content_length))
                 return self._json_response(self._api_generate(body))
+            elif path == "/api/select-folder":
+                return self._json_response(self._api_select_folder())
             elif path == "/api/open-folder":
                 return self._json_response(self._open_folder())
             elif path.startswith("/api/job/") and path.endswith("/cancel"):
@@ -797,12 +893,13 @@ class GPTImageServer:
     # ---------- 页面 / 文件 ----------
     def _serve_html(self):
         page = HTML_PAGE.replace("__CSRF_TOKEN__", self._csrf_token)
+        page = page.replace("SAVE_DIR_PLACEHOLDER", self.save_dir)
         return "200 OK", "text/html; charset=utf-8", page.encode("utf-8")
 
     def _serve_file(self, path: str):
         rel_name = unquote(path[len("/file/"):]).lstrip("/")  # 二次解码防御
-        # 安全校验：只允许 SAVE_DIR 下的文件
-        save_dir = Path(SAVE_DIR).resolve()
+        # 安全校验：只允许当前保存目录下的文件
+        save_dir = Path(self.save_dir).resolve()
         fpath = (save_dir / rel_name).resolve()
         try:
             if not str(fpath).startswith(str(save_dir) + os.sep):
@@ -839,11 +936,14 @@ class GPTImageServer:
         domain = self.endpoint.split("//")[-1].split("/")[0]
         return {"api_ready": True, "endpoint_domain": domain}
 
+    def _api_settings(self):
+        return {"save_dir": self.save_dir}
+
     def _api_list_images(self):
-        """返回 SAVE_DIR 下最近生成的图片列表（按时间倒序，最多 50 张）。
+        """返回当前保存目录下最近生成的图片列表（按时间倒序，最多 50 张）。
         用于页面刷新后自动展示历史图片。"""
         try:
-            save_dir = Path(SAVE_DIR)
+            save_dir = Path(self.save_dir)
             if not save_dir.exists():
                 return {"images": []}
             files = []
@@ -871,12 +971,41 @@ class GPTImageServer:
             return {"images": [], "error": str(e)}
 
     def _open_folder(self):
-        Path(SAVE_DIR).mkdir(parents=True, exist_ok=True)
+        Path(self.save_dir).mkdir(parents=True, exist_ok=True)
         try:
-            subprocess.Popen(["open", SAVE_DIR])
+            subprocess.Popen(["open", self.save_dir])
         except Exception:
             pass
         return {"success": True}
+
+    def _api_select_folder(self):
+        script = (
+            'POSIX path of (choose folder with prompt '
+            '"选择图片保存目录" default location POSIX file '
+            + json.dumps(self.save_dir)
+            + ')'
+        )
+        try:
+            proc = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=300
+            )
+        except subprocess.TimeoutExpired:
+            return {"error": "选择目录超时"}
+        except Exception as e:
+            return {"error": f"无法打开目录选择器: {e}"}
+        if proc.returncode != 0:
+            err = (proc.stderr or "").strip()
+            if "User canceled" in err or proc.returncode == 1:
+                return {"cancelled": True, "save_dir": self.save_dir}
+            return {"error": err or "目录选择失败"}
+        selected = proc.stdout.strip()
+        if selected.endswith(os.sep) and len(selected) > 1:
+            selected = selected.rstrip(os.sep)
+        error = self._set_save_dir(selected)
+        if error:
+            return {"error": error, "save_dir": self.save_dir}
+        return {"success": True, "save_dir": self.save_dir}
 
     def _build_image_url(self, action: str) -> str:
         """构造 images/generations 或 images/edits 地址。"""
@@ -1095,7 +1224,8 @@ class GPTImageServer:
         # 创建任务
         job_id = uuid.uuid4().hex[:12]
         job = GenJob(job_id=job_id, prompt=prompt, size=size, quality=quality,
-                     count=count, api_key=self.api_key, url=url, input_images=input_images)
+                     count=count, api_key=self.api_key, url=url,
+                     save_dir=self.save_dir, input_images=input_images)
         with self._jobs_lock:
             self._jobs[job_id] = job
         # 清理老任务（只保留最近 20 个）
@@ -1399,7 +1529,7 @@ class GPTImageServer:
             return None
 
     def _save_image(self, img_bytes: bytes, prompt: str, idx: int, total: int) -> str:
-        save_dir = Path(SAVE_DIR) / datetime.now().strftime("%Y-%m-%d")
+        save_dir = Path(self.save_dir) / datetime.now().strftime("%Y-%m-%d")
         save_dir.mkdir(parents=True, exist_ok=True)
         safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in prompt)[:40].strip().replace(" ", "_")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1485,7 +1615,7 @@ def main():
         print(f"     export OPENAI_API_KEY=...")
         print(f"     export AZURE_OPENAI_IMAGE_ENDPOINT=...")
 
-    print(f"  📁 图片保存至: {SAVE_DIR}")
+    print(f"  📁 图片保存至: {app.save_dir}")
     print(f"  🌐 浏览器即将打开...")
 
     server = HTTPServer(("127.0.0.1", PORT), RequestHandler)
