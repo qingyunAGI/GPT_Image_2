@@ -118,7 +118,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .save-path { font-size: 12px; color: var(--sub); text-align: center; }
-  .save-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+  .save-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; grid-column: 1 / -1; }
   .save-panel label { display: block; font-size: 12px; color: var(--sub); margin-bottom: 5px; font-weight: 500; }
   .save-panel input { width: 100%; padding: 9px 10px; border: 1.5px solid var(--border); border-radius: 8px; font-size: 13px; font-family: inherit; color: #515154; background: #fafafa; overflow: hidden; text-overflow: ellipsis; }
 
@@ -187,6 +187,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label>生成数量</label>
         <input type="number" id="count" value="1" min="1" max="__MAX__">
       </div>
+      <div class="save-panel">
+        <div>
+          <label for="saveDirInput">保存目录</label>
+          <input id="saveDirInput" type="text" readonly value="SAVE_DIR_PLACEHOLDER">
+        </div>
+        <button class="btn btn-secondary btn-small" type="button" id="chooseFolderBtn" onclick="chooseFolder()">选择目录</button>
+      </div>
     </div>
   </div>
 
@@ -203,13 +210,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div id="progressWrap" style="display:none;">
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <div style="font-size:12px; color:var(--sub); margin-top:4px;" id="progressText">0 / 0</div>
-  </div>
-  <div class="save-panel">
-    <div>
-      <label for="saveDirInput">保存目录</label>
-      <input id="saveDirInput" type="text" readonly value="SAVE_DIR_PLACEHOLDER">
-    </div>
-    <button class="btn btn-secondary btn-small" type="button" id="chooseFolderBtn" onclick="chooseFolder()">选择目录</button>
   </div>
 </div>
 
