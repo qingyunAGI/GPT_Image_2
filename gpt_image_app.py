@@ -81,7 +81,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .input-thumb span { position: absolute; left: 4px; right: 4px; bottom: 4px; background: rgba(0,0,0,0.58); color: #fff; font-size: 10px; padding: 2px 4px; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .input-remove { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border: none; border-radius: 50%; background: rgba(0,0,0,0.62); color: #fff; font-size: 16px; line-height: 20px; padding: 0; cursor: pointer; }
   .input-remove:hover { background: rgba(0,0,0,0.82); }
-  .advanced-toggle { font-size: 13px; color: var(--accent); cursor: pointer; user-select: none; margin-top: 12px; display: inline-block; }
+  .advanced-toggle { font-size: 13px; color: var(--accent); cursor: pointer; user-select: none; margin-top: 12px; display: inline-flex; align-items: center; gap: 6px; border: none; background: transparent; padding: 4px 0; font-family: inherit; font-weight: 600; }
+  .advanced-toggle:hover { color: #005bbf; }
+  .advanced-toggle .chevron { display: inline-block; min-width: 12px; text-align: center; font-size: 12px; line-height: 1; }
   .advanced { display: none; margin-top: 14px; padding-top: 14px; border-top: 1px solid #eee; }
   .advanced.show { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
   .field label { display: block; font-size: 12px; color: var(--sub); margin-bottom: 4px; font-weight: 500; }
@@ -162,7 +164,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
     <div class="upload-preview" id="uploadPreview"></div>
     <p class="hint">提示：不上传图片时为文生图；上传图片后会按提示词编辑或参考图片。Cmd+Enter 快速生成</p>
-    <span class="advanced-toggle" onclick="toggleAdvanced()">⚙ 高级设置</span>
+    <button class="advanced-toggle" type="button" id="advancedToggle" onclick="toggleAdvanced()" aria-expanded="true" aria-controls="advancedPanel">
+      <span>⚙ 高级设置</span><span class="chevron" id="advancedChevron">▲</span>
+    </button>
     <div class="advanced show" id="advancedPanel">
       <div class="field">
         <label>图片比例</label>
@@ -388,7 +392,10 @@ function clearInputImages() {
 }
 
 function toggleAdvanced() {
-  document.getElementById('advancedPanel').classList.toggle('show');
+  const panel = document.getElementById('advancedPanel');
+  const expanded = panel.classList.toggle('show');
+  document.getElementById('advancedToggle').setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  document.getElementById('advancedChevron').textContent = expanded ? '▲' : '▼';
 }
 
 function setStatus(msg, cls) {
