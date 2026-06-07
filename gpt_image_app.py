@@ -79,6 +79,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .input-thumb { position: relative; aspect-ratio: 1 / 1; border-radius: 8px; overflow: hidden; background: #eee; border: 1px solid #e5e5ea; }
   .input-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .input-thumb span { position: absolute; left: 4px; right: 4px; bottom: 4px; background: rgba(0,0,0,0.58); color: #fff; font-size: 10px; padding: 2px 4px; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .input-remove { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border: none; border-radius: 50%; background: rgba(0,0,0,0.62); color: #fff; font-size: 16px; line-height: 20px; padding: 0; cursor: pointer; }
+  .input-remove:hover { background: rgba(0,0,0,0.82); }
   .advanced-toggle { font-size: 13px; color: var(--accent); cursor: pointer; user-select: none; margin-top: 12px; display: inline-block; }
   .advanced { display: none; margin-top: 14px; padding-top: 14px; border-top: 1px solid #eee; }
   .advanced.show { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
@@ -244,7 +246,7 @@ let _lightboxIndex = 0;
 const MAX_INPUT_IMAGES = __MAX_INPUT_IMAGES__;
 const CSRF_TOKEN = "__CSRF_TOKEN__";
 let inputImageFiles = [];
-let inputPreviewUrls = [];
+let inputImageSeq = 0;
 
 function saveSettings() {
   try {
@@ -310,53 +312,79 @@ async function loadServerSettings() {
 
 async function handleInputImages() {
   const input = document.getElementById('inputImages');
-  const files = Array.from(input.files || []).slice(0, MAX_INPUT_IMAGES);
-  inputPreviewUrls.forEach(url => URL.revokeObjectURL(url));
-  inputPreviewUrls = [];
-  inputImageFiles = [];
-  const preview = document.getElementById('uploadPreview');
-  preview.innerHTML = '';
+  const selectedFiles = Array.from(input.files || []);
+  input.value = '';
+  if (selectedFiles.length === 0) {
+    updateInputImagePreview();
+    return;
+  }
 
-  if (files.length === 0) {
+  let added = 0;
+  let skipped = 0;
+  for (const file of selectedFiles) {
+    if (inputImageFiles.length >= MAX_INPUT_IMAGES) {
+      skipped++;
+      continue;
+    }
+    if (!['image/png', 'image/jpeg'].includes(file.type)) {
+      setStatus('只支持 PNG 或 JPG 图片', 'err');
+      skipped++;
+      continue;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      setStatus('单张输入图片不能超过 50MB', 'err');
+      skipped++;
+      continue;
+    }
+    inputImageFiles.push({
+      id: ++inputImageSeq,
+      file: file,
+      url: URL.createObjectURL(file),
+    });
+    added++;
+  }
+  updateInputImagePreview();
+  if (skipped > 0 && inputImageFiles.length >= MAX_INPUT_IMAGES) {
+    setStatus(`最多保留 ${MAX_INPUT_IMAGES} 张输入图片，已忽略多余图片`, 'info');
+  } else if (added > 0) {
+    setStatus(`已添加 ${added} 张输入图片，共 ${inputImageFiles.length} 张`, 'ok');
+  }
+}
+
+function escapeHtml(text) {
+  return String(text || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function updateInputImagePreview() {
+  const preview = document.getElementById('uploadPreview');
+  if (inputImageFiles.length === 0) {
+    preview.innerHTML = '';
     preview.classList.remove('show');
     document.getElementById('uploadLabel').textContent = `可选：上传参考图 / 待编辑图片（PNG、JPG，最多 ${MAX_INPUT_IMAGES} 张）`;
     return;
   }
-
-  for (const file of files) {
-    if (!['image/png', 'image/jpeg'].includes(file.type)) {
-      setStatus('只支持 PNG 或 JPG 图片', 'err');
-      clearInputImages();
-      return;
-    }
-    if (file.size > 50 * 1024 * 1024) {
-      setStatus('单张输入图片不能超过 50MB', 'err');
-      clearInputImages();
-      return;
-    }
-    inputImageFiles.push(file);
-    const url = URL.createObjectURL(file);
-    inputPreviewUrls.push(url);
-    const safeName = file.name.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    preview.insertAdjacentHTML('beforeend', `<div class="input-thumb"><img src="${url}" alt="${safeName}"><span>${safeName}</span></div>`);
-  }
-
+  preview.innerHTML = inputImageFiles.map(item => {
+    const safeName = escapeHtml(item.file.name);
+    return `<div class="input-thumb"><img src="${item.url}" alt="${safeName}"><button class="input-remove" type="button" title="移除" onclick="removeInputImage(${item.id})">×</button><span>${safeName}</span></div>`;
+  }).join('');
   preview.classList.add('show');
-  document.getElementById('uploadLabel').textContent = `已选择 ${inputImageFiles.length} 张输入图片`;
-  if ((input.files || []).length > MAX_INPUT_IMAGES) {
-    setStatus(`最多使用前 ${MAX_INPUT_IMAGES} 张输入图片`, 'info');
-  }
+  document.getElementById('uploadLabel').textContent = `已选择 ${inputImageFiles.length} / ${MAX_INPUT_IMAGES} 张输入图片，可继续追加`;
+}
+
+function removeInputImage(id) {
+  const idx = inputImageFiles.findIndex(item => item.id === id);
+  if (idx < 0) return;
+  URL.revokeObjectURL(inputImageFiles[idx].url);
+  inputImageFiles.splice(idx, 1);
+  updateInputImagePreview();
 }
 
 function clearInputImages() {
   const input = document.getElementById('inputImages');
   input.value = '';
+  inputImageFiles.forEach(item => URL.revokeObjectURL(item.url));
   inputImageFiles = [];
-  inputPreviewUrls.forEach(url => URL.revokeObjectURL(url));
-  inputPreviewUrls = [];
-  document.getElementById('uploadPreview').innerHTML = '';
-  document.getElementById('uploadPreview').classList.remove('show');
-  document.getElementById('uploadLabel').textContent = `可选：上传参考图 / 待编辑图片（PNG、JPG，最多 ${MAX_INPUT_IMAGES} 张）`;
+  updateInputImagePreview();
 }
 
 function toggleAdvanced() {
@@ -544,7 +572,7 @@ async function startGenerate() {
     form.append('ratio', document.getElementById('ratio').value);
     form.append('quality', document.getElementById('quality').value);
     form.append('count', String(count));
-    inputImageFiles.forEach(file => form.append('input_images', file, file.name));
+    inputImageFiles.forEach(item => form.append('input_images', item.file, item.file.name));
 
     const r = await fetch('/api/generate', {
       method: 'POST',
