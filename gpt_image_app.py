@@ -99,6 +99,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .btn-small { padding: 10px 14px; font-size: 13px; }
   .btn-danger { background: var(--danger); color: #fff; }
   .btn-danger:hover { background: #d70015; }
+  .history-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 14px; align-items: stretch; }
+  .history-tree { background: var(--card); border-radius: var(--radius); padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); min-height: 300px; max-height: 70vh; overflow: auto; }
+  .tree-title { font-size: 13px; color: var(--sub); font-weight: 700; margin-bottom: 8px; }
+  .tree-list { display: flex; flex-direction: column; gap: 2px; }
+  .tree-row { width: 100%; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px; align-items: center; border: none; background: transparent; color: #3a3a3c; border-radius: 7px; padding: 6px 7px; font-family: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+  .tree-row:hover { background: #f2f2f7; }
+  .tree-row.active { background: #e8f0fe; color: #1a56db; font-weight: 700; }
+  .tree-row.file { grid-template-columns: 18px minmax(0, 1fr); color: #515154; }
+  .tree-spacer { width: 18px; }
+  .tree-icon { width: 18px; text-align: center; color: var(--sub); font-size: 11px; }
+  .tree-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .tree-count { font-size: 11px; color: var(--sub); }
+  .tree-empty { color: #c4c4c9; font-size: 13px; padding: 24px 8px; text-align: center; }
   .gallery { background: var(--card); border-radius: var(--radius); padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); min-height: 300px; }
   .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
   .gallery-grid img { width: 100%; border-radius: 8px; display: block; cursor: pointer; transition: transform 0.15s; }
@@ -144,6 +157,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .modal-copy { font-size: 14px; line-height: 1.6; color: #515154; margin-bottom: 18px; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @media (max-width: 720px) {
+    .history-layout { grid-template-columns: 1fr; }
+    .history-tree { max-height: 240px; min-height: 120px; }
+  }
 </style>
 </head>
 <body>
@@ -208,8 +225,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <button class="btn btn-secondary" onclick="openFolder()" title="生成中也可以使用">📁 打开目录</button>
   </div>
 
-  <div class="gallery" id="gallery">
-    <p class="gallery-placeholder">生成的图片将在此处预览</p>
+  <div class="history-layout">
+    <aside class="history-tree" id="historyTree">
+      <div class="tree-title">历史照片</div>
+      <div class="tree-empty">加载中...</div>
+    </aside>
+    <div class="gallery" id="gallery">
+      <p class="gallery-placeholder">生成的图片将在此处预览</p>
+    </div>
   </div>
 
   <div class="status info" id="status">就绪</div>
@@ -251,6 +274,10 @@ const MAX_INPUT_IMAGES = __MAX_INPUT_IMAGES__;
 const CSRF_TOKEN = "__CSRF_TOKEN__";
 let inputImageFiles = [];
 let inputImageSeq = 0;
+let historyImages = [];
+let historyTree = null;
+let activeFolder = '__all__';
+let expandedTreeFolders = new Set(['__all__']);
 
 function saveSettings() {
   try {
@@ -276,13 +303,20 @@ async function loadRecentImages() {
   try {
     const r = await fetch('/api/images');
     const d = await r.json();
-    if (d.images && d.images.length > 0) {
-      renderGallery(d.images);
-      setStatus('已加载 ' + d.images.length + ' 张历史图片，可继续生成新图片', 'ok');
+    historyImages = d.images || [];
+    historyTree = d.tree || null;
+    seedExpandedFolders(historyTree);
+    renderHistoryTree();
+    if (historyImages.length > 0) {
+      renderCurrentHistoryGallery();
+      setStatus('已加载 ' + historyImages.length + ' 张历史图片，可继续生成新图片', 'ok');
     } else {
       renderGallery([]);
     }
   } catch (e) {
+    historyImages = [];
+    historyTree = null;
+    renderHistoryTree();
     renderGallery([]);
   }
 }
@@ -404,6 +438,83 @@ function setStatus(msg, cls) {
   s.className = 'status ' + cls;
 }
 
+function seedExpandedFolders(tree) {
+  expandedTreeFolders = new Set(['__all__']);
+  if (!tree || !tree.children) return;
+  const firstFolder = tree.children.find(node => node.type === 'folder' && node.folder);
+  const rootFolder = tree.children.find(node => node.type === 'folder' && node.folder === '');
+  if (rootFolder) expandedTreeFolders.add(rootFolder.id);
+  if (firstFolder) expandedTreeFolders.add(firstFolder.id);
+}
+
+function renderHistoryTree() {
+  const container = document.getElementById('historyTree');
+  if (!container) return;
+  if (!historyTree || !historyImages.length) {
+    container.innerHTML = '<div class="tree-title">历史照片</div><div class="tree-empty">暂无历史图片</div>';
+    return;
+  }
+  let html = '<div class="tree-title">历史照片</div><div class="tree-list">';
+  html += renderTreeNode(historyTree, 0);
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderTreeNode(node, depth) {
+  const isFile = node.type === 'file';
+  const id = escapeHtml(node.id || '');
+  const name = escapeHtml(node.name || '');
+  const count = Number(node.count || 0);
+  const indent = depth * 14;
+  if (isFile) {
+    return `<button class="tree-row file" style="padding-left:${indent + 7}px" type="button" title="${name}" data-id="${id}" onclick="openTreeFile(this.dataset.id)"><span class="tree-icon">□</span><span class="tree-name">${name}</span></button>`;
+  }
+  const expanded = expandedTreeFolders.has(node.id);
+  const active = activeFolder === (node.folder === undefined ? '__all__' : node.folder);
+  const chevron = (node.children && node.children.length) ? (expanded ? '▼' : '▶') : '';
+  let html = `<button class="tree-row ${active ? 'active' : ''}" style="padding-left:${indent + 7}px" type="button" title="${name}" data-id="${id}" onclick="selectTreeFolder(this.dataset.id)"><span class="tree-icon">${chevron}</span><span class="tree-name">${name}</span><span class="tree-count">${count}</span></button>`;
+  if (expanded && node.children && node.children.length) {
+    node.children.forEach(child => { html += renderTreeNode(child, depth + 1); });
+  }
+  return html;
+}
+
+function findTreeNodeById(id, node) {
+  if (!node) return null;
+  if (node.id === id) return node;
+  for (const child of (node.children || [])) {
+    const found = findTreeNodeById(id, child);
+    if (found) return found;
+  }
+  return null;
+}
+
+function selectTreeFolder(id) {
+  const node = findTreeNodeById(id, historyTree);
+  if (!node || node.type === 'file') return;
+  if (node.children && node.children.length) {
+    if (expandedTreeFolders.has(node.id)) expandedTreeFolders.delete(node.id);
+    else expandedTreeFolders.add(node.id);
+  }
+  activeFolder = node.folder === undefined ? '__all__' : node.folder;
+  renderHistoryTree();
+  renderCurrentHistoryGallery();
+}
+
+function openTreeFile(id) {
+  const node = findTreeNodeById(id, historyTree);
+  if (!node || !node.url) return;
+  openLightboxUrl(node.url);
+}
+
+function renderCurrentHistoryGallery() {
+  let images = historyImages;
+  if (activeFolder !== '__all__') {
+    images = historyImages.filter(img => img.folder === activeFolder || (activeFolder && img.folder && img.folder.startsWith(activeFolder + '/')));
+  }
+  renderGallery(images);
+}
+
 let _gallerySignature = '';  // 上一次 gallery 的状态签名（用于增量更新）
 
 function renderGallery(images) {
@@ -485,6 +596,16 @@ function openLightbox(index) {
   const url = _galleryUrls[index];
   if (!url) return;
   _lightboxIndex = index;
+  document.getElementById('lightbox-img').src = url + '?t=' + Date.now();
+  _updateLightboxInfo();
+  document.getElementById('lightbox').classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+
+function openLightboxUrl(url) {
+  if (!url) return;
+  _galleryUrls = [url];
+  _lightboxIndex = 0;
   document.getElementById('lightbox-img').src = url + '?t=' + Date.now();
   _updateLightboxInfo();
   document.getElementById('lightbox').classList.add('show');
@@ -625,6 +746,7 @@ async function pollProgress() {
       currentJob = null;
       stopGenUI();
       const ok = d.completed - d.errors;
+      await loadRecentImages();
       setStatus(`\u2705 任务完成！成功 ${ok} 张${d.errors > 0 ? '，失败 ' + d.errors : ''}`, 'ok');
     }
   } catch(e) {
@@ -975,35 +1097,116 @@ class GPTImageServer:
         return {"save_dir": self.save_dir}
 
     def _api_list_images(self):
-        """返回当前保存目录下最近生成的图片列表（按时间倒序，最多 50 张）。
-        用于页面刷新后自动展示历史图片。"""
+        """返回当前保存目录下的历史图片列表与文件树。"""
         try:
             save_dir = Path(self.save_dir)
             if not save_dir.exists():
-                return {"images": []}
+                return {"images": [], "tree": self._build_image_tree([]), "total": 0}
             files = []
             image_paths = [p for p in save_dir.rglob("*.png") if p.is_file()]
             for f in sorted(image_paths, key=lambda p: p.stat().st_mtime, reverse=True):
                 if not f.is_file() or f.suffix.lower() != ".png":
                     continue
                 try:
+                    stat = f.stat()
                     size_kb = f.stat().st_size / 1024
                     rel = f.relative_to(save_dir)
+                    rel_str = "/".join(rel.parts)
+                    folder = "/".join(rel.parts[:-1])
                     files.append({
                         "done": True,
-                        "url": "/file/" + "/".join(rel.parts),
+                        "url": "/file/" + rel_str,
                         "path": str(f),
                         "name": f.name,
-                        "folder": str(rel.parent) if str(rel.parent) != "." else "",
+                        "rel": rel_str,
+                        "folder": folder,
+                        "mtime": stat.st_mtime,
                         "size_kb": round(size_kb, 1),
                     })
-                    if len(files) >= 50:
-                        break
                 except OSError:
                     continue
-            return {"images": files, "total": len(files)}
+            return {"images": files, "tree": self._build_image_tree(files), "total": len(files)}
         except Exception as e:
-            return {"images": [], "error": str(e)}
+            return {"images": [], "tree": self._build_image_tree([]), "error": str(e)}
+
+    def _build_image_tree(self, images: List[Dict[str, Any]]) -> Dict[str, Any]:
+        tree = {
+            "id": "__all__",
+            "type": "folder",
+            "name": "全部历史",
+            "folder": "__all__",
+            "count": len(images),
+            "children": [],
+        }
+        root_images = [img for img in images if not img.get("folder")]
+        if root_images:
+            tree["children"].append({
+                "id": "folder:",
+                "type": "folder",
+                "name": "根目录",
+                "folder": "",
+                "count": len(root_images),
+                "children": [self._image_tree_file(img) for img in sorted(root_images, key=lambda x: x.get("mtime", 0), reverse=True)],
+            })
+
+        folder_nodes: Dict[str, Dict[str, Any]] = {}
+        top_nodes: List[Dict[str, Any]] = []
+
+        def ensure_folder(folder: str) -> Dict[str, Any]:
+            if folder in folder_nodes:
+                return folder_nodes[folder]
+            parts = folder.split("/") if folder else []
+            node = {
+                "id": "folder:" + folder,
+                "type": "folder",
+                "name": parts[-1] if parts else "根目录",
+                "folder": folder,
+                "count": 0,
+                "children": [],
+            }
+            folder_nodes[folder] = node
+            parent = "/".join(parts[:-1])
+            if parent:
+                ensure_folder(parent)["children"].append(node)
+            else:
+                top_nodes.append(node)
+            return node
+
+        for img in images:
+            folder = img.get("folder") or ""
+            if not folder:
+                continue
+            parts = folder.split("/")
+            for i in range(1, len(parts) + 1):
+                ensure_folder("/".join(parts[:i]))["count"] += 1
+            ensure_folder(folder)["children"].append(self._image_tree_file(img))
+
+        def sort_children(node: Dict[str, Any]):
+            children = node.get("children", [])
+            children.sort(key=lambda item: (
+                0 if item.get("type") == "folder" else 1,
+                -float(item.get("mtime", 0)) if item.get("type") == "file" else 0,
+                str(item.get("name", "")).lower()
+            ))
+            for child in children:
+                if child.get("type") == "folder":
+                    sort_children(child)
+
+        top_nodes.sort(key=lambda item: str(item.get("name", "")).lower(), reverse=True)
+        tree["children"].extend(top_nodes)
+        sort_children(tree)
+        return tree
+
+    def _image_tree_file(self, img: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": "file:" + str(img.get("rel", "")),
+            "type": "file",
+            "name": img.get("name", ""),
+            "rel": img.get("rel", ""),
+            "url": img.get("url", ""),
+            "mtime": img.get("mtime", 0),
+            "size_kb": img.get("size_kb", 0),
+        }
 
     def _open_folder(self):
         Path(self.save_dir).mkdir(parents=True, exist_ok=True)
